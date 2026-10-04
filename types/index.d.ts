@@ -43,8 +43,14 @@ export type BranchView = {
   error?: string
 }
 
+export type PrLink = {
+  branch: string
+  number: number
+  url: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'branch-usage': { view: BranchView }
+    'branch-usage': { view: BranchView; pr: PrLink | null }
   }
 }

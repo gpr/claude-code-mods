@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { BranchView, SessionFile } from '../types'
+import type { BranchView, PrLink, SessionFile } from '../types'
 import {
   DEFAULT_PRICES,
   addUsage,
@@ -27,14 +27,17 @@ const PANE = 'branch-usage'
 const TOOL = 'mcp__branch-usage__get_branch_usage'
 const REFRESH_MS = 10_000
 const MIN_REFRESH_GAP_MS = 2_000
+const PR_COLOR = 'blue'
 
 const view = atom({ plugin: 'branch-usage', key: 'view' } as const, emptyView('', null))
+const prLink = atom({ plugin: 'branch-usage', key: 'pr' } as const, null as PrLink | null)
 
 // Module variables start over on a hot reload; everything here is rebuilt
 // from the session files on disk.
 let prices: PriceTable = DEFAULT_PRICES
 let writes: Promise<unknown> = Promise.resolve()
 let lastRefresh = 0
+let prBranch: string | null = null
 const agentTypes = new Map<string, string>()
 const files = new Map<string, SessionFile>()
 
@@ -80,7 +83,7 @@ async function refresh($: EngineInterface): Promise<void> {
   try {
     const next = await compute($)
     await update($, view, () => next)
-    $.ui.status(next.branch === null ? undefined : `${formatUsd(next.totalUsd)} · ${next.branch}`)
+    if (next.branch !== prBranch) await refreshPr($)
   } catch (err) {
     $.ui.log(`branch-usage: refresh failed: ${String(err)}`)
   }
@@ -147,18 +150,37 @@ async function gh($: EngineInterface, args: string[], stdin?: string): Promise<s
   return ran.stdout.trim()
 }
 
+/** The open PR of the current branch, or null when there is none or `gh` fails (logged). */
+async function lookupPr($: EngineInterface, branch: string): Promise<PrLink | null> {
+  try {
+    const json = await gh($, ['pr', 'view', '--json', 'number,url'])
+    const { number, url } = JSON.parse(json) as { number: number; url: string }
+    return { branch, number, url }
+  } catch (err) {
+    if (!String(err).includes('no pull requests found')) {
+      $.ui.log(`branch-usage: could not look up the PR of ${branch}: ${String(err)}`)
+    }
+    return null
+  }
+}
+
+// Sets prBranch first, so a failing lookup is not retried on every refresh tick.
+async function refreshPr($: EngineInterface): Promise<PrLink | null> {
+  const branch = await currentBranch($)
+  prBranch = branch
+  const found = branch === null ? null : await lookupPr($, branch)
+  await update($, prLink, () => found)
+  return found
+}
+
 // Creates the PR comment, or edits it when the marker comment already exists.
 async function syncPrCommentNow($: EngineInterface): Promise<void> {
   const repo = await $.session.repo()
   const branch = await currentBranch($)
   if (repo === null || branch === null) return
-  let pr: string
-  try {
-    pr = await gh($, ['pr', 'view', '--json', 'number', '--jq', '.number'])
-  } catch (err) {
-    if (String(err).includes('no pull requests found')) return
-    throw err
-  }
+  const link = await refreshPr($)
+  if (link === null) return
+  const pr = link.number
   const body = prCommentBody(aggregate(await readBranchFiles($, repo.root, branch), branch, ''))
   const found = await gh($, [
     'api',
@@ -270,6 +292,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'branch-usage' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Branch usage', focus: true })
+    await refreshPr($)
     await refresh($)
 
     return { text: summaryText(await compute($)) }
@@ -282,9 +305,32 @@ export const register: Register = (on, options) => {
     return { result: summaryText(await compute($, branch)) }
   })
 
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const { branch, totalUsd } = await read($, view)
+    if (e.props.hasSurvey || branch === null) return next(e)
+
+    const { Box, Link, Text } = $.ui.resolve(e)
+    const link = await read($, prLink)
+
+    return (
+      <Box>
+        <Text dimColor>
+          {formatUsd(totalUsd)} · {branch}
+          {link?.branch === branch ? ' ' : ''}
+        </Text>
+        {link?.branch === branch && (
+          <Link href={link.url}>
+            <Text color={PR_COLOR} underline>(#{link.number})</Text>
+          </Link>
+        )}
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Link, Text } = $.ui.resolve(e)
     const { branch, sessionId, sessions, byModel, byAgent, totalUsd, engineUsd, error } = await read($, view)
+    const link = await read($, prLink)
     const rows = Math.max(1, (e.viewport?.rows ?? 30) - 4)
 
     if (error !== undefined) return <Text color="red">{error}</Text>
@@ -304,10 +350,32 @@ export const register: Register = (on, options) => {
         </Box>
       </Box>
     )
+    // The PR link sits right of the branch name and outside the truncating
+    // label, so a long branch name never cuts it off.
+    const header = (
+      <Box flexDirection="row" justifyContent="space-between">
+        <Box flexShrink={1}>
+          <Box flexShrink={1}>
+            <Text wrap="truncate-end" bold>{branch}</Text>
+          </Box>
+          {link?.branch === branch && (
+            <Box flexShrink={0}>
+              <Text> </Text>
+              <Link href={link.url}>
+                <Text color={PR_COLOR} underline>(#{link.number})</Text>
+              </Link>
+            </Box>
+          )}
+        </Box>
+        <Box flexShrink={0} marginLeft={1}>
+          <Text bold>{formatUsd(totalUsd)}</Text>
+        </Box>
+      </Box>
+    )
 
     return (
       <Box flexDirection="column">
-        {line(branch, totalUsd, null, { bold: true })}
+        {header}
         <Text dimColor>
           {sessions.length} session{sessions.length === 1 ? '' : 's'}
         </Text>
