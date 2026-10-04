@@ -88,42 +88,68 @@ async function agentLabel($: EngineInterface, agentId: string | undefined): Prom
   return agentTypes.get(agentId) ?? 'subagent'
 }
 
+type Attached = { key: string; path: string; file: SessionFile; isNew: boolean }
+
+/** Finds this session's file on the current branch, creating it in memory when absent. */
+async function loadSessionFile($: EngineInterface): Promise<Attached | null> {
+  const repo = await $.session.repo()
+  const branch = await currentBranch($)
+  if (repo === null || branch === null) return null
+  const sessionId = await $.session.id()
+  const key = `${branch}/${sessionId}`
+  const path = `${usageDir(repo.root, branch)}/${sessionId}.json`
+  const known = files.get(key)
+  if (known !== undefined) return { key, path, file: known, isNew: false }
+  if (await $.fs.exists(path)) {
+    return { key, path, file: JSON.parse(await $.fs.read(path)) as SessionFile, isNew: false }
+  }
+  return { key, path, file: newSessionFile(sessionId, branch, Date.now()), isNew: true }
+}
+
+// Attaches the session to its branch: its file exists from the first turn on,
+// and again under the new branch after a checkout or a new id after /clear.
+async function attachNow($: EngineInterface): Promise<void> {
+  const attached = await loadSessionFile($)
+  if (attached === null) return
+  files.set(attached.key, attached.file)
+  if (attached.isNew) {
+    await $.fs.write(attached.path, JSON.stringify(attached.file, null, 2))
+    await refresh($)
+  }
+}
+
 async function recordNow(
   $: EngineInterface,
   agentId: string | undefined,
   model: string,
   usage: TokenUsage,
 ): Promise<void> {
-  const repo = await $.session.repo()
-  const branch = await currentBranch($)
-  if (repo === null || branch === null) return
-  const sessionId = await $.session.id()
-  const key = `${branch}/${sessionId}`
-  const path = `${usageDir(repo.root, branch)}/${sessionId}.json`
+  const attached = await loadSessionFile($)
+  if (attached === null) return
   const now = Date.now()
-  let file = files.get(key)
-  if (file === undefined) {
-    file = (await $.fs.exists(path))
-      ? (JSON.parse(await $.fs.read(path)) as SessionFile)
-      : newSessionFile(sessionId, branch, now)
-  }
-  file = addUsage(file, { agent: await agentLabel($, agentId), model, usage }, prices, now)
-  files.set(key, file)
-  await $.fs.write(path, JSON.stringify(file, null, 2))
+  const file = addUsage(attached.file, { agent: await agentLabel($, agentId), model, usage }, prices, now)
+  files.set(attached.key, file)
+  await $.fs.write(attached.path, JSON.stringify(file, null, 2))
   if (now - lastRefresh >= MIN_REFRESH_GAP_MS) await refresh($)
 }
 
 // One write at a time, so parallel subagent steps never lose an update.
+function queue($: EngineInterface, job: () => Promise<void>): Promise<unknown> {
+  writes = writes.then(job).catch(err => $.ui.log(`branch-usage: could not write usage: ${String(err)}`))
+  return writes
+}
+
+function attach($: EngineInterface): Promise<unknown> {
+  return queue($, () => attachNow($))
+}
+
 function record(
   $: EngineInterface,
   agentId: string | undefined,
   model: string,
   usage: TokenUsage,
 ): Promise<unknown> {
-  writes = writes
-    .then(() => recordNow($, agentId, model, usage))
-    .catch(err => $.ui.log(`branch-usage: could not record usage: ${String(err)}`))
-  return writes
+  return queue($, () => recordNow($, agentId, model, usage))
 }
 
 export const register: Register = (on, options) => {
@@ -143,9 +169,18 @@ export const register: Register = (on, options) => {
         properties: { branch: { type: 'string', description: 'Branch name; default is the current branch.' } },
       },
     })
+    await attach($)
     await refresh($)
     $.clock.every(REFRESH_MS, () => refresh($))
     void $.ui.open({ id: PANE, title: 'Branch usage' })
+
+    return next(e)
+  })
+
+  // session.start does not fire again after /clear, and a checkout moves the
+  // branch: each turn re-attaches to the current branch and session id.
+  on('turn.start', async ($, e, next) => {
+    await attach($)
 
     return next(e)
   })
