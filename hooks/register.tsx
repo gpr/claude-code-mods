@@ -1,0 +1,236 @@
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+
+import type { BranchView, SessionFile } from '../types'
+import {
+  DEFAULT_PRICES,
+  addUsage,
+  aggregate,
+  buildPrices,
+  emptyView,
+  formatUsd,
+  newSessionFile,
+  summaryText,
+  tokenLine,
+  usageDir,
+  type PriceTable,
+  type TokenUsage,
+} from './usage'
+
+const PANE = 'branch-usage'
+const TOOL = 'mcp__branch-usage__get_branch_usage'
+const REFRESH_MS = 10_000
+const MIN_REFRESH_GAP_MS = 2_000
+
+const view = atom({ plugin: 'branch-usage', key: 'view' } as const, emptyView('', null))
+
+// Module variables start over on a hot reload; everything here is rebuilt
+// from the session files on disk.
+let prices: PriceTable = DEFAULT_PRICES
+let writes: Promise<unknown> = Promise.resolve()
+let lastRefresh = 0
+const agentTypes = new Map<string, string>()
+const files = new Map<string, SessionFile>()
+
+async function git($: EngineInterface, ...args: string[]): Promise<string | null> {
+  const ran = await $.process.run(['git', ...args], { cwd: await $.session.root() })
+  return ran.exitCode === 0 ? ran.stdout.trim() : null
+}
+
+async function currentBranch($: EngineInterface): Promise<string | null> {
+  const name = await git($, 'rev-parse', '--abbrev-ref', 'HEAD')
+  if (name === null) return null
+  if (name !== 'HEAD') return name
+  const sha = await git($, 'rev-parse', '--short', 'HEAD')
+  return `detached@${sha ?? 'unknown'}`
+}
+
+async function readBranchFiles($: EngineInterface, root: string, branch: string): Promise<SessionFile[]> {
+  const dir = usageDir(root, branch)
+  if (!(await $.fs.exists(dir))) return []
+  const found: SessionFile[] = []
+  for (const entry of await $.fs.list(dir)) {
+    if (entry.kind !== 'file' || !entry.name.endsWith('.json')) continue
+    try {
+      found.push(JSON.parse(await $.fs.read(`${dir}/${entry.name}`)) as SessionFile)
+    } catch (err) {
+      $.ui.log(`branch-usage: skipped unreadable ${dir}/${entry.name}: ${String(err)}`)
+    }
+  }
+  return found
+}
+
+async function compute($: EngineInterface, branchName?: string): Promise<BranchView> {
+  const sessionId = await $.session.id()
+  const repo = await $.session.repo()
+  if (repo === null) return emptyView(sessionId, null)
+  const branch = branchName ?? (await currentBranch($))
+  if (branch === null) return emptyView(sessionId, null)
+  return aggregate(await readBranchFiles($, repo.root, branch), branch, sessionId)
+}
+
+async function refresh($: EngineInterface): Promise<void> {
+  lastRefresh = Date.now()
+  try {
+    const next = await compute($)
+    await update($, view, () => next)
+    $.ui.status(next.branch === null ? undefined : `${formatUsd(next.totalUsd)} · ${next.branch}`)
+  } catch (err) {
+    $.ui.log(`branch-usage: refresh failed: ${String(err)}`)
+  }
+}
+
+async function agentLabel($: EngineInterface, agentId: string | undefined): Promise<string> {
+  if (agentId === undefined) return 'main'
+  if (!agentTypes.has(agentId)) {
+    for (const agent of await $.agent.list()) agentTypes.set(agent.id, agent.type)
+  }
+  return agentTypes.get(agentId) ?? 'subagent'
+}
+
+async function recordNow(
+  $: EngineInterface,
+  agentId: string | undefined,
+  model: string,
+  usage: TokenUsage,
+): Promise<void> {
+  const repo = await $.session.repo()
+  const branch = await currentBranch($)
+  if (repo === null || branch === null) return
+  const sessionId = await $.session.id()
+  const key = `${branch}/${sessionId}`
+  const path = `${usageDir(repo.root, branch)}/${sessionId}.json`
+  const now = Date.now()
+  let file = files.get(key)
+  if (file === undefined) {
+    file = (await $.fs.exists(path))
+      ? (JSON.parse(await $.fs.read(path)) as SessionFile)
+      : newSessionFile(sessionId, branch, now)
+  }
+  file = addUsage(file, { agent: await agentLabel($, agentId), model, usage }, prices, now)
+  files.set(key, file)
+  await $.fs.write(path, JSON.stringify(file, null, 2))
+  if (now - lastRefresh >= MIN_REFRESH_GAP_MS) await refresh($)
+}
+
+// One write at a time, so parallel subagent steps never lose an update.
+function record(
+  $: EngineInterface,
+  agentId: string | undefined,
+  model: string,
+  usage: TokenUsage,
+): Promise<unknown> {
+  writes = writes
+    .then(() => recordNow($, agentId, model, usage))
+    .catch(err => $.ui.log(`branch-usage: could not record usage: ${String(err)}`))
+  return writes
+}
+
+export const register: Register = (on, options) => {
+  prices = buildPrices(String(options.prices ?? ''))
+
+  on('session.start', async ($, e, next) => {
+    await $.command.register({
+      name: 'branch-usage',
+      description: 'Show token usage and cost of all sessions on this branch',
+    })
+    await $.tool.register({
+      name: 'get_branch_usage',
+      description:
+        'Tokens (in/out/cache read/cache write) and $ cost per model, agent and session for all Claude Code sessions on a git branch. Defaults to the current branch.',
+      inputSchema: {
+        type: 'object',
+        properties: { branch: { type: 'string', description: 'Branch name; default is the current branch.' } },
+      },
+    })
+    await refresh($)
+    $.clock.every(REFRESH_MS, () => refresh($))
+    void $.ui.open({ id: PANE, title: 'Branch usage' })
+
+    return next(e)
+  })
+
+  on('turn.step', async function* ($, e, next) {
+    const result = yield* next(e)
+    if (result.usage !== null) {
+      const { model, ...usage } = result.usage
+      await record($, e.agentId, model, usage)
+    }
+
+    return result
+  })
+
+  on('session.measure', async ($, e, next) => {
+    const cost = e.cost
+    if (cost !== undefined) {
+      const sessionId = await $.session.id()
+      for (const [key, file] of files) {
+        if (key.endsWith(`/${sessionId}`)) files.set(key, { ...file, engineUsd: cost.usd })
+      }
+      await update($, view, v => ({ ...v, engineUsd: cost.usd }))
+    }
+
+    return next(e)
+  })
+
+  on('command.run', { command: 'branch-usage' }, async $ => {
+    await $.ui.open({ id: PANE, title: 'Branch usage', focus: true })
+    await refresh($)
+
+    return { text: summaryText(await compute($)) }
+  })
+
+  on('tool.call', { tool: TOOL }, async ($, e) => {
+    const asked = (e as { branch?: unknown }).branch
+    const branch = typeof asked === 'string' && asked !== '' ? asked : undefined
+
+    return { result: summaryText(await compute($, branch)) }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const { branch, sessionId, sessions, byModel, byAgent, totalUsd, engineUsd, error } = await read($, view)
+    const rows = Math.max(1, (e.viewport?.rows ?? 30) - 4)
+
+    if (error !== undefined) return <Text color="red">{error}</Text>
+    if (branch === null) return <Text dimColor>Not inside a git repository.</Text>
+
+    return (
+      <Box flexDirection="column">
+        <Text bold>{branch}</Text>
+        <Text>
+          {formatUsd(totalUsd)} · {sessions.length} session{sessions.length === 1 ? '' : 's'}
+        </Text>
+        {engineUsd !== undefined && <Text dimColor>this session, engine total {formatUsd(engineUsd)}</Text>}
+        <Text bold> </Text>
+        <Text bold>By model</Text>
+        {byModel.map(r => (
+          <Box flexDirection="column">
+            <Text wrap="truncate-end">
+              {r.model}
+              {r.isEstimated ? ' ~' : ''} {formatUsd(r.usd)}
+            </Text>
+            <Text dimColor wrap="truncate-end">  {tokenLine(r)}</Text>
+          </Box>
+        ))}
+        <Text bold> </Text>
+        <Text bold>By agent</Text>
+        {byAgent.map(r => (
+          <Box flexDirection="column">
+            <Text wrap="truncate-end">
+              {r.agent} {formatUsd(r.usd)} · {r.requests} req
+            </Text>
+            <Text dimColor wrap="truncate-end">  {tokenLine(r)}</Text>
+          </Box>
+        ))}
+        <Text bold> </Text>
+        <Text bold>By session</Text>
+        {sessions.slice(0, rows).map(s => (
+          <Text wrap="truncate-end" dimColor={s.sessionId !== sessionId}>
+            {s.sessionId.slice(0, 8)} {new Date(s.updatedAt).toLocaleString()} {formatUsd(s.usd)}
+          </Text>
+        ))}
+      </Box>
+    )
+  })
+}

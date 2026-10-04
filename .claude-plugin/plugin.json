@@ -1,0 +1,14 @@
+{
+  "name": "branch-usage",
+  "version": "0.1.0",
+  "description": "Tracks tokens and cost per model, agent and session for every session on a git branch, in a right pane.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "prices": {
+      "type": "string",
+      "title": "Price overrides",
+      "description": "JSON: {\"<model id prefix>\": {\"in\": 3, \"out\": 15, \"cacheRead\": 0.3, \"cacheWrite\": 3.75}} in $ per million tokens. Empty uses the built-in table.",
+      "default": ""
+    }
+  }
+}
