@@ -266,7 +266,7 @@ export const register: Register = (on, options) => {
           <Text bold>By model</Text>
         </Box>
         {byModel.map(r => (
-          <Box key={r.model} flexDirection="column">
+          <Box flexDirection="column">
             {line(`${shortModel(r.model)}${r.isEstimated ? ' ~' : ''}`, r.usd, sharePct(r.usd, totalUsd))}
             <Text dimColor wrap="truncate-end">  {tokenLine(r)}</Text>
           </Box>
@@ -275,7 +275,7 @@ export const register: Register = (on, options) => {
           <Text bold>By agent</Text>
         </Box>
         {byAgent.map(r => (
-          <Box key={r.agent} flexDirection="column">
+          <Box flexDirection="column">
             {line(`${r.agent} · ${r.requests} req`, r.usd, sharePct(r.usd, totalUsd))}
             <Text dimColor wrap="truncate-end">  {tokenLine(r)}</Text>
           </Box>
@@ -286,14 +286,12 @@ export const register: Register = (on, options) => {
         {sessions.slice(0, rows).map(s => {
           const active = s.sessionId === sessionId
           return (
-            <Box key={s.sessionId}>
-              {line(
-                `${active ? '● ' : '  '}${s.sessionId.slice(0, 8)}  ${relativeTime(s.updatedAt, now)}`,
-                s.usd,
-                null,
-                active ? { bold: true, color: 'cyan' } : {},
-              )}
-            </Box>
+            line(
+              `${active ? '● ' : '  '}${s.sessionId.slice(0, 8)}  ${relativeTime(s.updatedAt, now)}`,
+              s.usd,
+              null,
+              active ? { bold: true, color: 'cyan' } : {},
+            )
           )
         })}
       </Box>
