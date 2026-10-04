@@ -9,7 +9,10 @@ import {
   buildPrices,
   emptyView,
   formatUsd,
+  isPrSyncCommand,
   newSessionFile,
+  prCommentBody,
+  PR_COMMENT_MARKER,
   relativeTime,
   sharePct,
   shortModel,
@@ -136,6 +139,43 @@ async function recordNow(
   if (now - lastRefresh >= MIN_REFRESH_GAP_MS) await refresh($)
 }
 
+async function gh($: EngineInterface, args: string[], stdin?: string): Promise<string> {
+  const ran = await $.process.run(['gh', ...args], { cwd: await $.session.root(), stdin })
+  if (ran.exitCode !== 0) {
+    throw new Error(`gh ${args.join(' ')} exited ${ran.exitCode}: ${ran.stderr.trim()}`)
+  }
+  return ran.stdout.trim()
+}
+
+// Creates the PR comment, or edits it when the marker comment already exists.
+async function syncPrCommentNow($: EngineInterface): Promise<void> {
+  const repo = await $.session.repo()
+  const branch = await currentBranch($)
+  if (repo === null || branch === null) return
+  let pr: string
+  try {
+    pr = await gh($, ['pr', 'view', '--json', 'number', '--jq', '.number'])
+  } catch (err) {
+    if (String(err).includes('no pull requests found')) return
+    throw err
+  }
+  const body = prCommentBody(aggregate(await readBranchFiles($, repo.root, branch), branch, ''))
+  const found = await gh($, [
+    'api',
+    `repos/{owner}/{repo}/issues/${pr}/comments`,
+    '--paginate',
+    '--jq',
+    `[.[] | select(.body | startswith("${PR_COMMENT_MARKER}")) | .id][0] // empty`,
+  ])
+  const id = found.split('\n')[0]
+  if (id === '') {
+    await gh($, ['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${pr}/comments`, '-F', 'body=@-'], body)
+  } else {
+    await gh($, ['api', '-X', 'PATCH', `repos/{owner}/{repo}/issues/comments/${id}`, '-F', 'body=@-'], body)
+  }
+  $.ui.toast(`branch-usage: PR #${pr} comment ${id === '' ? 'created' : 'updated'}`)
+}
+
 // One write at a time, so parallel subagent steps never lose an update.
 function queue($: EngineInterface, job: () => Promise<void>): Promise<unknown> {
   writes = writes.then(job).catch(err => $.ui.log(`branch-usage: could not write usage: ${String(err)}`))
@@ -203,6 +243,16 @@ export const register: Register = (on, options) => {
     }
 
     return result
+  })
+
+  // After a PR is created or the branch is pushed, post or refresh the usage comment.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny === undefined && ran.isError !== true && isPrSyncCommand(e.command)) {
+      void queue($, () => syncPrCommentNow($))
+    }
+
+    return ran
   })
 
   on('session.measure', async ($, e, next) => {

@@ -214,6 +214,19 @@ const usageTable = (label: string, rows: readonly UsageRow[], name: (r: UsageRow
   ...rows.map(r => `| ${name(r)} | ${tokenCells(r)} |`),
 ]
 
+/** First line of the PR comment; marks the one comment the mod owns. */
+export const PR_COMMENT_MARKER = '<!-- branch-usage -->'
+
+// `gh pr create` or `git [opts] push` at the start of a command or after && ; | newline.
+const PR_SYNC_COMMAND = /(^|[;&|\n]\s*)(gh\s+pr\s+create|git(\s+-\S+(\s+[^\s-]\S*)?)*\s+push)(\s|$)/
+
+/** True when a Bash command creates a PR or pushes a branch. */
+export const isPrSyncCommand = (command: string): boolean => PR_SYNC_COMMAND.test(command)
+
+/** PR comment text: the marker, then the report without the "this session" mark. */
+export const prCommentBody = (view: BranchView): string =>
+  `${PR_COMMENT_MARKER}\n${summaryText({ ...view, sessionId: '' })}`
+
 /** Markdown summary for the command and the model tool. */
 export const summaryText = (view: BranchView): string => {
   if (view.branch === null) return 'branch-usage: not inside a git repository, nothing is tracked.'

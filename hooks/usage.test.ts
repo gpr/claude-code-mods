@@ -7,8 +7,11 @@ import {
   branchDirName,
   buildPrices,
   costUsd,
+  PR_COMMENT_MARKER,
   formatTokens,
+  isPrSyncCommand,
   newSessionFile,
+  prCommentBody,
   priceFor,
   relativeTime,
   sharePct,
@@ -98,4 +101,27 @@ test('relativeTime switches unit at 1m, 1h and 1d', () => {
 test('sharePct rounds and survives a zero total', () => {
   expect(sharePct(1.432, 2.58)).toBe('56%')
   expect(sharePct(0, 0)).toBe('0%')
+})
+
+test('isPrSyncCommand matches PR creation and pushes only', () => {
+  expect(isPrSyncCommand('gh pr create --fill')).toBe(true)
+  expect(isPrSyncCommand('git push')).toBe(true)
+  expect(isPrSyncCommand('git push -u origin feat/x')).toBe(true)
+  expect(isPrSyncCommand('git -C /repo push')).toBe(true)
+  expect(isPrSyncCommand('npm test && git push')).toBe(true)
+  expect(isPrSyncCommand('git push-foo')).toBe(false)
+  expect(isPrSyncCommand('git status')).toBe(false)
+  expect(isPrSyncCommand('gh pr view')).toBe(false)
+})
+
+test('prCommentBody starts with the marker and drops the session mark', () => {
+  const file = addUsage(
+    newSessionFile('abcdef123456', 'feat/x', 0),
+    { agent: 'main', model: 'claude-opus-5-5', usage: usage(1000, 500) },
+    DEFAULT_PRICES,
+    1,
+  )
+  const body = prCommentBody(aggregate([file], 'feat/x', 'abcdef123456'))
+  expect(body.startsWith(`${PR_COMMENT_MARKER}\n`)).toBe(true)
+  expect(body.includes('●')).toBe(false)
 })
