@@ -1,0 +1,12 @@
+{
+  "name": "claude-code-mods",
+  "description": "Claude Code mods by gpr.",
+  "owner": { "name": "gpr" },
+  "plugins": [
+    {
+      "name": "branch-usage",
+      "source": "./plugins/branch-usage",
+      "description": "Tracks tokens and cost per model, agent and session for every session on a git branch, in a right pane."
+    }
+  ]
+}
