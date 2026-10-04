@@ -377,16 +377,16 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {header}
         <Text dimColor>
-          {sessions.length} session{sessions.length === 1 ? '' : 's'}
+          {'  '}{sessions.length} session{sessions.length === 1 ? '' : 's'}
         </Text>
-        {engineUsd !== undefined && <Text dimColor>this session, engine total {formatUsd(engineUsd)}</Text>}
+        {engineUsd !== undefined && <Text dimColor>  this session, engine total {formatUsd(engineUsd)}</Text>}
         <Box marginTop={1}>
           <Text bold>By model</Text>
         </Box>
         {byModel.map(r => (
           <Box flexDirection="column">
-            {line(`${shortModel(r.model)}${r.isEstimated ? ' ~' : ''}`, r.usd, sharePct(r.usd, totalUsd))}
-            <Text dimColor wrap="truncate-end">  {tokenLine(r)}</Text>
+            {line(`  - ${shortModel(r.model)}${r.isEstimated ? ' ~' : ''}`, r.usd, sharePct(r.usd, totalUsd))}
+            <Text dimColor wrap="truncate-end">    {tokenLine(r)}</Text>
           </Box>
         ))}
         <Box marginTop={1}>
@@ -394,8 +394,8 @@ export const register: Register = (on, options) => {
         </Box>
         {byAgent.map(r => (
           <Box flexDirection="column">
-            {line(`${r.agent} · ${r.requests} req`, r.usd, sharePct(r.usd, totalUsd))}
-            <Text dimColor wrap="truncate-end">  {tokenLine(r)}</Text>
+            {line(`  - ${r.agent} · ${r.requests} req`, r.usd, sharePct(r.usd, totalUsd))}
+            <Text dimColor wrap="truncate-end">    {tokenLine(r)}</Text>
           </Box>
         ))}
         <Box marginTop={1}>
@@ -405,7 +405,7 @@ export const register: Register = (on, options) => {
           const active = s.sessionId === sessionId
           return (
             line(
-              `${active ? '● ' : '  '}${s.sessionId.slice(0, 8)}  ${relativeTime(s.updatedAt, now)}`,
+              `  - ${active ? '● ' : '  '}${s.sessionId.slice(0, 8)}  ${relativeTime(s.updatedAt, now)}`,
               s.usd,
               null,
               active ? { bold: true, color: 'cyan' } : {},
