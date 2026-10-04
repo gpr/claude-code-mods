@@ -10,6 +10,9 @@ import {
   emptyView,
   formatUsd,
   newSessionFile,
+  relativeTime,
+  sharePct,
+  shortModel,
   summaryText,
   tokenLine,
   usageDir,
@@ -237,41 +240,62 @@ export const register: Register = (on, options) => {
     if (error !== undefined) return <Text color="red">{error}</Text>
     if (branch === null) return <Text dimColor>Not inside a git repository.</Text>
 
+    const now = Date.now()
+    // Label shrinks and truncates; the right part keeps its width, so the
+    // cost column stays on the right edge.
+    const line = (label: string, usd: number, share: string | null, props: { bold?: boolean; color?: string } = {}) => (
+      <Box flexDirection="row" justifyContent="space-between">
+        <Box flexShrink={1}>
+          <Text wrap="truncate-end" {...props}>{label}</Text>
+        </Box>
+        <Box flexShrink={0} marginLeft={1}>
+          {share !== null && <Text dimColor>{share} </Text>}
+          <Text {...props}>{formatUsd(usd)}</Text>
+        </Box>
+      </Box>
+    )
+
     return (
       <Box flexDirection="column">
-        <Text bold>{branch}</Text>
-        <Text>
-          {formatUsd(totalUsd)} · {sessions.length} session{sessions.length === 1 ? '' : 's'}
+        {line(branch, totalUsd, null, { bold: true })}
+        <Text dimColor>
+          {sessions.length} session{sessions.length === 1 ? '' : 's'}
         </Text>
         {engineUsd !== undefined && <Text dimColor>this session, engine total {formatUsd(engineUsd)}</Text>}
-        <Text bold> </Text>
-        <Text bold>By model</Text>
+        <Box marginTop={1}>
+          <Text bold>By model</Text>
+        </Box>
         {byModel.map(r => (
-          <Box flexDirection="column">
-            <Text wrap="truncate-end">
-              {r.model}
-              {r.isEstimated ? ' ~' : ''} {formatUsd(r.usd)}
-            </Text>
+          <Box key={r.model} flexDirection="column">
+            {line(`${shortModel(r.model)}${r.isEstimated ? ' ~' : ''}`, r.usd, sharePct(r.usd, totalUsd))}
             <Text dimColor wrap="truncate-end">  {tokenLine(r)}</Text>
           </Box>
         ))}
-        <Text bold> </Text>
-        <Text bold>By agent</Text>
+        <Box marginTop={1}>
+          <Text bold>By agent</Text>
+        </Box>
         {byAgent.map(r => (
-          <Box flexDirection="column">
-            <Text wrap="truncate-end">
-              {r.agent} {formatUsd(r.usd)} · {r.requests} req
-            </Text>
+          <Box key={r.agent} flexDirection="column">
+            {line(`${r.agent} · ${r.requests} req`, r.usd, sharePct(r.usd, totalUsd))}
             <Text dimColor wrap="truncate-end">  {tokenLine(r)}</Text>
           </Box>
         ))}
-        <Text bold> </Text>
-        <Text bold>By session</Text>
-        {sessions.slice(0, rows).map(s => (
-          <Text wrap="truncate-end" dimColor={s.sessionId !== sessionId}>
-            {s.sessionId.slice(0, 8)} {new Date(s.updatedAt).toLocaleString()} {formatUsd(s.usd)}
-          </Text>
-        ))}
+        <Box marginTop={1}>
+          <Text bold>By session</Text>
+        </Box>
+        {sessions.slice(0, rows).map(s => {
+          const active = s.sessionId === sessionId
+          return (
+            <Box key={s.sessionId}>
+              {line(
+                `${active ? '● ' : '  '}${s.sessionId.slice(0, 8)}  ${relativeTime(s.updatedAt, now)}`,
+                s.usd,
+                null,
+                active ? { bold: true, color: 'cyan' } : {},
+              )}
+            </Box>
+          )
+        })}
       </Box>
     )
   })

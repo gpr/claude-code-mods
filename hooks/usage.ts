@@ -185,23 +185,59 @@ export const formatTokens = (n: number): string =>
 
 export const formatUsd = (n: number): string => `$${n < 10 ? n.toFixed(3) : n.toFixed(2)}`
 
+/** Pane label for a model id: `claude-sonnet-5-5` becomes `sonnet-5-5`. */
+export const shortModel = (model: string): string => model.replace(/^claude-/, '')
+
+export const relativeTime = (ms: number, now: number): string => {
+  const mins = Math.floor((now - ms) / 60_000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`
+}
+
+export const sharePct = (usd: number, total: number): string =>
+  total === 0 ? '0%' : `${Math.round((usd / total) * 100)}%`
+
 export const tokenLine = (r: UsageRow): string =>
   `in ${formatTokens(r.input)} out ${formatTokens(r.output)} cr ${formatTokens(r.cacheRead)} cw ${formatTokens(r.cacheWrite)}`
 
-/** Plain-text summary for the command and the model tool. */
+const TOKEN_HEAD = '| Req | In | Out | Cache read | Cache write | Cost |'
+const TOKEN_ALIGN = '| ---: | ---: | ---: | ---: | ---: | ---: |'
+
+const tokenCells = (r: UsageRow): string =>
+  `${r.requests} | ${formatTokens(r.input)} | ${formatTokens(r.output)} | ${formatTokens(r.cacheRead)} | ${formatTokens(r.cacheWrite)} | ${formatUsd(r.usd)}`
+
+const usageTable = (label: string, rows: readonly UsageRow[], name: (r: UsageRow) => string): string[] => [
+  `| ${label} ${TOKEN_HEAD}`,
+  `| --- ${TOKEN_ALIGN}`,
+  ...rows.map(r => `| ${name(r)} | ${tokenCells(r)} |`),
+]
+
+/** Markdown summary for the command and the model tool. */
 export const summaryText = (view: BranchView): string => {
   if (view.branch === null) return 'branch-usage: not inside a git repository, nothing is tracked.'
   const lines = [
-    `Branch ${view.branch}: ${formatUsd(view.totalUsd)} over ${view.sessions.length} session(s)`,
+    `## Branch \`${view.branch}\``,
     '',
-    'By model:',
-    ...view.byModel.map(r => `  ${r.model}${r.isEstimated ? ' (~price)' : ''}  ${formatUsd(r.usd)}  ${r.requests} req  ${tokenLine(r)}`),
+    `**${formatUsd(view.totalUsd)}** over ${view.sessions.length} session${view.sessions.length === 1 ? '' : 's'}`,
     '',
-    'By agent:',
-    ...view.byAgent.map(r => `  ${r.agent}  ${formatUsd(r.usd)}  ${r.requests} req  ${tokenLine(r)}`),
+    '### By model',
     '',
-    'By session:',
-    ...view.sessions.map(s => `  ${s.sessionId.slice(0, 8)}  ${new Date(s.updatedAt).toISOString()}  ${formatUsd(s.usd)}`),
+    ...usageTable('Model', view.byModel, r => `\`${r.model}\`${r.isEstimated ? ' (~price)' : ''}`),
+    '',
+    '### By agent',
+    '',
+    ...usageTable('Agent', view.byAgent, r => r.agent),
+    '',
+    '### By session',
+    '',
+    '| Session | Updated | Cost |',
+    '| --- | --- | ---: |',
+    ...view.sessions.map(
+      s =>
+        `| \`${s.sessionId.slice(0, 8)}\`${s.sessionId === view.sessionId ? ' ●' : ''} | ${new Date(s.updatedAt).toISOString()} | ${formatUsd(s.usd)} |`,
+    ),
   ]
   return lines.join('\n')
 }

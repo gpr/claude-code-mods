@@ -10,6 +10,9 @@ import {
   formatTokens,
   newSessionFile,
   priceFor,
+  relativeTime,
+  sharePct,
+  shortModel,
 } from './usage'
 
 const usage = (input: number, output: number, cacheRead = 0, cacheWrite = 0) => ({
@@ -74,4 +77,25 @@ test('branch names are safe directory names', () => {
   expect(branchDirName('feat/x')).toBe('feat%2Fx')
   expect(formatTokens(12_340)).toBe('12.3k')
   expect(formatTokens(1_200_000)).toBe('1.2M')
+})
+
+test('shortModel strips the claude- prefix only', () => {
+  expect(shortModel('claude-sonnet-5-5')).toBe('sonnet-5-5')
+  expect(shortModel('gpt-x')).toBe('gpt-x')
+})
+
+test('relativeTime switches unit at 1m, 1h and 1d', () => {
+  const now = 10 * 86_400_000
+  const ago = (ms: number) => relativeTime(now - ms, now)
+  expect(ago(59_000)).toBe('just now')
+  expect(ago(60_000)).toBe('1m ago')
+  expect(ago(59 * 60_000)).toBe('59m ago')
+  expect(ago(60 * 60_000)).toBe('1h ago')
+  expect(ago(23 * 3_600_000)).toBe('23h ago')
+  expect(ago(24 * 3_600_000)).toBe('1d ago')
+})
+
+test('sharePct rounds and survives a zero total', () => {
+  expect(sharePct(1.432, 2.58)).toBe('56%')
+  expect(sharePct(0, 0)).toBe('0%')
 })
