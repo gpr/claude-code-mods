@@ -177,8 +177,15 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // session.start does not fire again after /clear, and a checkout moves the
-  // branch: each turn re-attaches to the current branch and session id.
+  // /clear starts a new session id without session.start; attach it now so
+  // the pane lists it before the first prompt.
+  on('classic.SessionStart', async ($, e, next) => {
+    if (e.source === 'clear') await attach($)
+
+    return next(e)
+  })
+
+  // A checkout moves the branch: each turn re-attaches to the current branch.
   on('turn.start', async ($, e, next) => {
     await attach($)
 
