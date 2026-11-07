@@ -5,8 +5,14 @@ import {
   addUsage,
   aggregate,
   branchDirName,
+  baseTag,
   buildPrices,
+  carryOver,
   costUsd,
+  matchesBase,
+  sessionFileName,
+  sinceText,
+  summaryText,
   PR_COMMENT_MARKER,
   formatTokens,
   isPrSyncCommand,
@@ -124,4 +130,39 @@ test('prCommentBody starts with the marker and drops the session mark', () => {
   const body = prCommentBody(aggregate([file], 'feat/x', 'abcdef123456'))
   expect(body.startsWith(`${PR_COMMENT_MARKER}\n`)).toBe(true)
   expect(body.includes('●')).toBe(false)
+})
+
+test('file names carry the starting point', () => {
+  expect(sessionFileName('s1', null)).toBe('s1@local.json')
+  expect(sessionFileName('s1', 'abcdef1234567890')).toBe('s1@abcdef123456.json')
+  expect(baseTag(null)).toBe('local')
+})
+
+test('matchesBase counts legacy files on feature branches only', () => {
+  const legacy = { ...newSessionFile('a', 'x', 0), base: undefined }
+  expect(matchesBase(legacy, 'b1', false)).toBe(true)
+  expect(matchesBase(legacy, 'b1', true)).toBe(false)
+  expect(matchesBase(newSessionFile('a', 'x', 0, 'b1'), 'b1', true)).toBe(true)
+  expect(matchesBase(newSessionFile('a', 'x', 0, 'b1'), 'b2', true)).toBe(false)
+  expect(matchesBase(newSessionFile('a', 'x', 0, null), null, true)).toBe(true)
+})
+
+test('carryOver merges rows, returns null when empty and shows as a labelled session', () => {
+  expect(carryOver([], 'main', 'feat', 'b1', 0)).toBe(null)
+  const a = addUsage(newSessionFile('a', 'main', 0, 'b1'), { agent: 'main', model: 'claude-sonnet-5-5', usage: usage(1e6, 0) }, DEFAULT_PRICES, 1)
+  const b = addUsage(newSessionFile('b', 'main', 0, 'b1'), { agent: 'main', model: 'claude-sonnet-5-5', usage: usage(1e6, 0) }, DEFAULT_PRICES, 2)
+  const carried = carryOver([a, b], 'main', 'feat', 'b1', 5)
+  expect(carried?.base).toBe('b1')
+  expect(carried?.rows['main|claude-sonnet-5-5'].requests).toBe(2)
+  const view = aggregate([carried as NonNullable<typeof carried>], 'feat', 's')
+  expect(Math.abs(view.totalUsd - 4) < 1e-6).toBe(true)
+  expect(view.sessions[0].label).toBe('↳ from main')
+})
+
+test('sinceText says where counting starts', () => {
+  const base = aggregate([], 'main', 's', { base: 'abcdef1234', baseRef: 'origin/main', isDefault: true })
+  expect(sinceText(base)).toBe('since abcdef1 (origin/main)')
+  expect(sinceText({ ...base, isDefault: false })).toBe('since abcdef1 (branch start)')
+  expect(sinceText({ ...base, base: null })?.startsWith('no remote yet')).toBe(true)
+  expect(summaryText(base).includes('since abcdef1')).toBe(true)
 })
