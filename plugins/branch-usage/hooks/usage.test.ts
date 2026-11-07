@@ -7,6 +7,7 @@ import {
   branchDirName,
   baseTag,
   buildPrices,
+  carriedFileName,
   carryOver,
   costUsd,
   matchesBase,
@@ -142,6 +143,7 @@ test('matchesBase counts legacy files on feature branches only', () => {
   const legacy = { ...newSessionFile('a', 'x', 0), base: undefined }
   expect(matchesBase(legacy, 'b1', false)).toBe(true)
   expect(matchesBase(legacy, 'b1', true)).toBe(false)
+  expect(matchesBase(legacy, null, true)).toBe(true)
   expect(matchesBase(newSessionFile('a', 'x', 0, 'b1'), 'b1', true)).toBe(true)
   expect(matchesBase(newSessionFile('a', 'x', 0, 'b1'), 'b2', true)).toBe(false)
   expect(matchesBase(newSessionFile('a', 'x', 0, null), null, true)).toBe(true)
@@ -165,4 +167,9 @@ test('sinceText says where counting starts', () => {
   expect(sinceText({ ...base, isDefault: false })).toBe('since abcdef1 (branch start)')
   expect(sinceText({ ...base, base: null })?.startsWith('no remote yet')).toBe(true)
   expect(summaryText(base).includes('since abcdef1')).toBe(true)
+})
+
+test('carried file names are safe and tagged with the starting point', () => {
+  expect(carriedFileName('feat/x', 'abcdef1234567890')).toBe('carried-feat%2Fx@abcdef123456.json')
+  expect(carriedFileName('main', null)).toBe('carried-main@local.json')
 })

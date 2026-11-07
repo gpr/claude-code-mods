@@ -88,13 +88,17 @@ export const baseTag = (base: string | null): string => (base === null ? 'local'
 export const sessionFileName = (sessionId: string, base: string | null): string =>
   `${sessionId}@${baseTag(base)}.json`
 
+/** File name of the snapshot a new branch takes from the branch it came from. */
+export const carriedFileName = (from: string, base: string | null): string =>
+  sessionFileName(`carried-${encodeURIComponent(from)}`, base)
+
 /**
  * Whether a file counts toward a view anchored at `base`. Legacy files (no
  * `base` field) keep counting on feature branches and are hidden on the
- * default branch, whose view only covers the cost since the starting point.
+ * default branch once a remote exists, whose view only covers the cost since the starting point.
  */
 export const matchesBase = (file: SessionFile, base: string | null, isDefault: boolean): boolean =>
-  file.base === undefined ? !isDefault : file.base === base
+  file.base === undefined ? !isDefault || base === null : file.base === base
 
 export const newSessionFile = (
   sessionId: string,

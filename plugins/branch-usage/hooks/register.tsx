@@ -7,6 +7,7 @@ import {
   addUsage,
   aggregate,
   buildPrices,
+  carriedFileName,
   carryOver,
   emptyView,
   formatUsd,
@@ -58,6 +59,18 @@ async function currentBranch($: EngineInterface): Promise<string | null> {
   return `detached@${sha ?? 'unknown'}`
 }
 
+// The remote default ref and the default branch name. Looked up with several
+// git calls, so cached; `attachNow` refreshes it once per turn.
+let remote: { ref: string | null; defaultName: string | null } | null = null
+
+async function remoteInfo($: EngineInterface, fresh: boolean) {
+  if (fresh || remote === null) {
+    const ref = await remoteDefaultRef($)
+    remote = { ref, defaultName: await defaultBranchName($, ref) }
+  }
+  return remote
+}
+
 type Anchor = { branch: string; base: string | null; baseRef: string | null; isDefault: boolean }
 
 const META_FILE = '.branch.json'
@@ -100,18 +113,20 @@ async function readMeta($: EngineInterface, root: string, branch: string): Promi
  * the merge-base with its remote ref, so a push moves it; any other branch
  * keeps the starting point it had when first seen.
  */
-async function anchorFor($: EngineInterface, root: string, branch: string): Promise<Anchor> {
-  const remoteRef = await remoteDefaultRef($)
-  const isDefault = branch === (await defaultBranchName($, remoteRef))
-  const point = async (rev: string) =>
-    remoteRef === null ? null : await git($, 'merge-base', rev, remoteRef)
-  if (isDefault) {
-    const rev = branch === (await currentBranch($)) ? 'HEAD' : `refs/heads/${branch}`
-    return { branch, base: await point(rev), baseRef: remoteRef, isDefault }
-  }
+async function anchorFor(
+  $: EngineInterface,
+  root: string,
+  branch: string,
+  current: string | null,
+  fresh = false,
+): Promise<Anchor> {
+  const { ref, defaultName } = await remoteInfo($, fresh)
+  const isDefault = branch === defaultName
+  const rev = branch === current ? 'HEAD' : `refs/heads/${branch}`
+  const point = async () => (ref === null ? null : await git($, 'merge-base', rev, ref))
+  if (isDefault) return { branch, base: await point(), baseRef: ref, isDefault }
   const meta = await readMeta($, root, branch)
-  const rev = branch === (await currentBranch($)) ? 'HEAD' : `refs/heads/${branch}`
-  return { branch, base: meta === null ? await point(rev) : meta.base, baseRef: null, isDefault }
+  return { branch, base: meta === null ? await point() : meta.base, baseRef: null, isDefault }
 }
 
 async function readBranchFiles($: EngineInterface, root: string, anchor: Anchor): Promise<SessionFile[]> {
@@ -134,10 +149,11 @@ async function compute($: EngineInterface, branchName?: string): Promise<BranchV
   const sessionId = await $.session.id()
   const repo = await $.session.repo()
   if (repo === null) return emptyView(sessionId, null)
-  const branch = branchName ?? (await currentBranch($))
+  const current = await currentBranch($)
+  const branch = branchName ?? current
   if (branch === null) return emptyView(sessionId, null)
-  const anchor = await anchorFor($, repo.root, branch)
-  return aggregate(await readBranchFiles($, repo.root, anchor), branch, sessionId, anchor)
+  const where = await anchorFor($, repo.root, branch, current)
+  return aggregate(await readBranchFiles($, repo.root, where), branch, sessionId, where)
 }
 
 async function refresh($: EngineInterface): Promise<void> {
@@ -173,7 +189,10 @@ async function loadSessionFile($: EngineInterface, fresh: boolean): Promise<Atta
   const repo = await $.session.repo()
   const branch = await currentBranch($)
   if (repo === null || branch === null) return null
-  if (fresh || anchor === null || anchor.branch !== branch) anchor = await anchorFor($, repo.root, branch)
+  // The default branch's base can move at any time (a push from any terminal), so it is re-read per step.
+  if (fresh || anchor === null || anchor.branch !== branch || anchor.isDefault) {
+    anchor = await anchorFor($, repo.root, branch, branch, fresh)
+  }
   const sessionId = await $.session.id()
   const key = `${branch}/${sessionId}@${anchor.base ?? 'local'}`
   const path = `${usageDir(repo.root, branch)}/${sessionFileName(sessionId, anchor.base)}`
@@ -191,7 +210,7 @@ async function loadSessionFile($: EngineInterface, fresh: boolean): Promise<Atta
  * same starting point.
  */
 async function pinBranch($: EngineInterface, root: string, current: Anchor): Promise<void> {
-  if (current.isDefault || (await readMeta($, root, current.branch)) !== null) return
+  if (current.isDefault || current.branch.startsWith('detached@') || (await readMeta($, root, current.branch)) !== null) return
   const dir = usageDir(root, current.branch)
   const fresh =
     !(await $.fs.exists(dir)) ||
@@ -201,14 +220,14 @@ async function pinBranch($: EngineInterface, root: string, current: Anchor): Pro
   await $.fs.write(`${dir}/${META_FILE}`, JSON.stringify(meta, null, 2))
   if (!fresh) return
 
-  const remoteRef = await remoteDefaultRef($)
-  const from = lastBranch !== null && lastBranch !== current.branch ? lastBranch : await defaultBranchName($, remoteRef)
+  const from =
+    lastBranch !== null && lastBranch !== current.branch ? lastBranch : (await remoteInfo($, false)).defaultName
   if (from === null || from === current.branch) return
-  const source = await anchorFor($, root, from)
+  const source = await anchorFor($, root, from, current.branch)
   if (source.base !== current.base) return
   const carried = carryOver(await readBranchFiles($, root, source), from, current.branch, current.base, now)
   if (carried === null) return
-  await $.fs.write(`${dir}/${sessionFileName(`carried-${encodeURIComponent(from)}`, current.base)}`, JSON.stringify(carried, null, 2))
+  await $.fs.write(`${dir}/${carriedFileName(from, current.base)}`, JSON.stringify(carried, null, 2))
 }
 
 // Attaches the session to its branch: its file exists from the first turn on,
@@ -280,7 +299,7 @@ async function syncPrCommentNow($: EngineInterface): Promise<void> {
   const link = await refreshPr($)
   if (link === null) return
   const pr = link.number
-  const where = await anchorFor($, repo.root, branch)
+  const where = await anchorFor($, repo.root, branch, branch)
   const body = prCommentBody(aggregate(await readBranchFiles($, repo.root, where), branch, '', where))
   const found = await gh($, [
     'api',
@@ -372,7 +391,10 @@ export const register: Register = (on, options) => {
     const ran = await next(e)
     if (ran.deny === undefined && ran.isError !== true && isPrSyncCommand(e.command)) {
       // A push moves the default branch's starting point: re-attach first, so later steps go into a new file.
-      void queue($, () => attachNow($)).then(() => queue($, () => syncPrCommentNow($)))
+      void queue($, async () => {
+        await attachNow($)
+        await syncPrCommentNow($)
+      })
     }
 
     return ran
@@ -430,8 +452,9 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Link, Text } = $.ui.resolve(e)
-    const { branch, sessionId, sessions, byModel, byAgent, totalUsd, engineUsd, error, ...rest } = await read($, view)
-    const since = sinceText({ branch, sessionId, sessions, byModel, byAgent, totalUsd, ...rest })
+    const v = await read($, view)
+    const { branch, sessionId, sessions, byModel, byAgent, totalUsd, engineUsd, error } = v
+    const since = sinceText(v)
     const link = await read($, prLink)
     const rows = Math.max(1, (e.viewport?.rows ?? 30) - 4)
 
