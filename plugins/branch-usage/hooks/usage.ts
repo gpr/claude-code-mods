@@ -82,10 +82,34 @@ export const costUsd = (u: TokenUsage, p: Price): number =>
     u.cache_creation_input_tokens * p.cacheWrite) /
   1e6
 
-export const newSessionFile = (sessionId: string, branch: string, now: number): SessionFile => ({
+/** Short tag for a starting point, used in file names. */
+export const baseTag = (base: string | null): string => (base === null ? 'local' : base.slice(0, 12))
+
+export const sessionFileName = (sessionId: string, base: string | null): string =>
+  `${sessionId}@${baseTag(base)}.json`
+
+/** File name of the snapshot a new branch takes from the branch it came from. */
+export const carriedFileName = (from: string, base: string | null): string =>
+  sessionFileName(`carried-${encodeURIComponent(from)}`, base)
+
+/**
+ * Whether a file counts toward a view anchored at `base`. Legacy files (no
+ * `base` field) keep counting on feature branches and are hidden on the
+ * default branch once a remote exists, whose view only covers the cost since the starting point.
+ */
+export const matchesBase = (file: SessionFile, base: string | null, isDefault: boolean): boolean =>
+  file.base === undefined ? !isDefault || base === null : file.base === base
+
+export const newSessionFile = (
+  sessionId: string,
+  branch: string,
+  now: number,
+  base: string | null = null,
+): SessionFile => ({
   version: 1,
   sessionId,
   branch,
+  base,
   startedAt: now,
   updatedAt: now,
   rows: {},
@@ -130,6 +154,26 @@ const merge = (into: Map<string, UsageRow>, key: string, row: UsageRow, label: P
   })
 }
 
+/** Snapshot of `from`'s cost at `base`, as a session file of `branch`; null when it has none. */
+export const carryOver = (
+  files: readonly SessionFile[],
+  from: string,
+  branch: string,
+  base: string | null,
+  now: number,
+): SessionFile | null => {
+  const rows = new Map<string, UsageRow>()
+  for (const file of files) {
+    for (const row of Object.values(file.rows)) merge(rows, `${row.agent}|${row.model}`, row, {})
+  }
+  if (rows.size === 0) return null
+  return {
+    ...newSessionFile(`carried:${from}`, branch, now, base),
+    carriedFrom: from,
+    rows: Object.fromEntries(rows),
+  }
+}
+
 const byUsdDesc = (a: UsageRow, b: UsageRow) => b.usd - a.usd
 
 /** Folds every session file of a branch into the view the pane draws. */
@@ -137,6 +181,11 @@ export const aggregate = (
   files: readonly SessionFile[],
   branch: string,
   sessionId: string,
+  anchor: { base: string | null; baseRef: string | null; isDefault: boolean } = {
+    base: null,
+    baseRef: null,
+    isDefault: false,
+  },
 ): BranchView => {
   const models = new Map<string, UsageRow>()
   const agents = new Map<string, UsageRow>()
@@ -150,7 +199,12 @@ export const aggregate = (
       sessionUsd += row.usd
     }
     totalUsd += sessionUsd
-    sessions.push({ sessionId: file.sessionId, updatedAt: file.updatedAt, usd: sessionUsd })
+    sessions.push({
+      sessionId: file.sessionId,
+      updatedAt: file.updatedAt,
+      usd: sessionUsd,
+      ...(file.carriedFrom === undefined ? {} : { label: `↳ from ${file.carriedFrom}` }),
+    })
   }
   sessions.sort((a, b) => b.updatedAt - a.updatedAt)
   return {
@@ -160,6 +214,7 @@ export const aggregate = (
     byModel: [...models.values()].sort(byUsdDesc),
     byAgent: [...agents.values()].sort(byUsdDesc),
     totalUsd,
+    ...anchor,
     engineUsd: files.find(f => f.sessionId === sessionId)?.engineUsd,
   }
 }
@@ -227,6 +282,14 @@ export const isPrSyncCommand = (command: string): boolean => PR_SYNC_COMMAND.tes
 export const prCommentBody = (view: BranchView): string =>
   `${PR_COMMENT_MARKER}\n${summaryText({ ...view, sessionId: '' })}`
 
+/** One line saying where the cost starts counting. */
+export const sinceText = (view: BranchView): string | null => {
+  if (view.base === undefined) return null
+  if (view.base === null) return 'no remote yet: counting everything until the first push'
+  const ref = view.isDefault ? (view.baseRef ?? 'remote') : 'branch start'
+  return `since ${view.base.slice(0, 7)} (${ref})`
+}
+
 /** Markdown summary for the command and the model tool. */
 export const summaryText = (view: BranchView): string => {
   if (view.branch === null) return 'branch-usage: not inside a git repository, nothing is tracked.'
@@ -234,7 +297,7 @@ export const summaryText = (view: BranchView): string => {
     `## Branch \`${view.branch}\``,
     '',
     `**${formatUsd(view.totalUsd)}** over ${view.sessions.length} session${view.sessions.length === 1 ? '' : 's'}`,
-    '',
+    ...(sinceText(view) === null ? [] : [`_${sinceText(view)}_`, '']),
     '### By model',
     '',
     ...usageTable('Model', view.byModel, r => `\`${r.model}\`${r.isEstimated ? ' (~price)' : ''}`),
@@ -249,7 +312,7 @@ export const summaryText = (view: BranchView): string => {
     '| --- | --- | ---: |',
     ...view.sessions.map(
       s =>
-        `| \`${s.sessionId.slice(0, 8)}\`${s.sessionId === view.sessionId ? ' ●' : ''} | ${new Date(s.updatedAt).toISOString()} | ${formatUsd(s.usd)} |`,
+        `| ${s.label ?? `\`${s.sessionId.slice(0, 8)}\``}${s.sessionId === view.sessionId ? ' ●' : ''} | ${new Date(s.updatedAt).toISOString()} | ${formatUsd(s.usd)} |`,
     ),
   ]
   return lines.join('\n')

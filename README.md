@@ -81,11 +81,15 @@ After Claude runs `gh pr create` or `git push` successfully through its Bash too
 1. **Every model response is recorded.** That covers the main agent and every subagent, labelled with the subagent type (`Explore`, `Plan`, …). The plugin adds the response's input, output, cache-read and cache-write tokens to the session's file, and prices them at that moment.
 2. **One file per session, per branch**, in your repo:
    ```
-   .claude/branch-usage/<url-encoded branch>/<session id>.json
+   .claude/branch-usage/<url-encoded branch>/<session id>@<starting point>.json
    ```
    `feat/x` is stored as `feat%2Fx`.
 3. **Sessions follow your branch.** At each turn the session re-attaches to the branch currently checked out. A `git checkout` mid-session starts a file under the new branch, and `/clear` starts a new session file.
-4. **The pane adds up** all session files of the current branch: by model, by agent and by session.
+4. **Cost counts from a starting point**: the merge-base of your branch with the remote default branch (e.g. `origin/main`).
+   - On the **default branch**, a push moves the starting point, so the view shows the cost *since the last push*. With **no remote**, everything counts until the first push. Older files stay on disk, just hidden.
+   - A **feature branch** pins its starting point when first seen (`.branch.json`), so pushes, rebases and merging main never reset it.
+   - When a branch is created, the cost of the branch it came from at the same starting point is **copied in once** (shown as `↳ from main`). Later spend on the source branch doesn't leak in, and two branches made from the same point both get the copy.
+5. **The pane adds up** all matching session files of the current branch: by model, by agent and by session.
 
 Writes are serialized, so parallel subagents never lose an update. Because the data lives in plain files, every session on the branch sees the same totals, including several Claude Code windows open at once.
 
@@ -139,6 +143,7 @@ Prices are applied when usage is recorded, so a change affects new usage only, n
 
 - **Estimates, not your bill.** Costs use list prices from the table above. Discounts, batch pricing and plan-based billing aren't modelled. To sanity-check, the pane shows Claude Code's own total for the current session (*engine total*) beside the plugin's figure.
 - **Only sessions with the plugin installed are counted.** Earlier sessions, and teammates without the plugin, don't show up.
+- **A pull/rebase on the default branch moves its starting point** too (the merge-base changes), so its view resets without a push of yours. If the remote has no default branch yet (only a feature branch was pushed), the default branch keeps counting everything.
 - **Branch renames split history**, because data is keyed by branch name. A detached HEAD is tracked as `detached@<short sha>`.
 - **The PR comment is updated only on a push or PR creation by Claude.** Usage after the last push appears at the next one.
 
